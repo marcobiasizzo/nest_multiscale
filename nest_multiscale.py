@@ -8,7 +8,7 @@ from marco_nest_utils import utils, visualizer as vsl
 
 class sim_handler:
     def __init__(self, nest_, pop_list_to_ode_, pop_list_to_nest_, ode_params_, sim_time_, sim_period_=1,
-                 cereb_control_class_=None, robot_=None):
+                 additional_classes=None, cereb_control_class_=None, robot_=None):
         self.nest = nest_  # load nest and previously defined spiking n.n.s
         self.pop_list_to_ode = pop_list_to_ode_     # list of neurons pops projecting to mass model
         self.pop_list_to_nest = pop_list_to_nest_  # list of mass models projecting to spiking n.n.s
@@ -35,19 +35,12 @@ class sim_handler:
 
         self.rng = np.random.default_rng(round(time.time() * 1000))
 
-        self.robot = robot_
-        if robot_ is not None:
-            assert cereb_control_class_ is not None, 'You should provide also the robot cereb_control class list'
-            self.robot.set_robot_T(sim_period_)
-            self.n_joints = len(self.robot.q)
-            assert self.n_joints == len(cereb_control_class_.des_trajec), 'Should provide as many trajectory as robot joints'
-
-        self.cereb_control_class = cereb_control_class_
-        if cereb_control_class_ is not None:
-            assert robot_ is not None, 'You should provide also the robot class'
-            self.pop_list_to_robot = self.cereb_control_setup(cereb_control_class_)
-            self.sd_list_R = utils.attach_spikedetector(self.nest, self.pop_list_to_robot)
-
+        if additional_classes is not None:
+            self.additional_classes = additional_classes
+            for a_c in self.additional_classes:
+                a_c.start(sim_time_, sim_period_)
+        else:
+            self.additional_classes = []
 
 
     def get_system_dimentions(self):
@@ -84,19 +77,6 @@ class sim_handler:
         return 1. / (1 + np.exp(-self.a * (s - self.th))) + self.q
 
 
-    def cereb_control_setup(self, cereb_control_class_):
-        # set proper sampling time in cereb control
-        self.cereb_control_class.set_T_and_max_func(self.T, self.T_fin)
-
-        # divide dcn in pos tau and neg tau
-        pop_list_to_robot = self.cereb_control_class.Cereb_class.get_dcn_indexes(self.n_joints)
-
-        self.u_R_dim = len(pop_list_to_robot)   # total number of moments
-        self.y_R_dim = self.u_R_dim     # total number of error signals to be sent to IO
-
-        return pop_list_to_robot    # , pf_pc_conn, w0
-
-
     def simulate(self, sub_intervals=10, tot_trials=1, modified_tau_=None, cortical_input=None, healthy_cortical_input=None):
         """ Simulate the model made by spiking n.n.s and mass models.
             Total simulation time is self.T_fin, while sampling time is self.T   """
@@ -125,37 +105,13 @@ class sim_handler:
         ode_to_spikes_delay = int(3 / self.T)  # [ms]      # delay before sending inputs to mass models
         yT_buf = np.tile(y0, [ode_to_spikes_delay, 1])  # create a buffer of ode_to_spikes_delay yT
 
-        if self.cereb_control_class is not None:
-            tau0 = np.array([0.] * self.u_R_dim)
-            tau_sol = None  # will contain all solutions over time
-
-            tau = tau0
-            prev_steps = len(kernel_robot)
-            tau_old = np.zeros((prev_steps, 2*self.n_joints))
-
-            sd_list_io, list_io = self.attach_io_spike_det()
-
-            io0 = np.array([0.] * 2)
-            io_sol = None  # will contain all solutions over time
-
-            io = io0
-            prev_steps_io = len(kernel)
-            io_old = np.zeros((prev_steps, 2*self.n_joints))
-
-            self.robot.reset_state(self.cereb_control_class.starting_state)
-
-            e_old = np.zeros((int(140 / self.T), self.n_joints))
-
         # if trial is not 1, net will be simulated multiple times
         # NOTE THAT network status won't be reset, but just robot status
         for trial in range(tot_trials):
             print(f'Iteration #{trial + 1}')
 
-            if self.cereb_control_class is not None:
-                self.robot.reset_state(self.cereb_control_class.starting_state)
-                tau_old = np.zeros((prev_steps, 2 * self.n_joints))
-                io_old = np.zeros((prev_steps_io, 2 * self.n_joints))
-                q_val = [0.]  # visualizer buffer
+            for a_c in self.additional_classes:
+                a_c.before_loop()
 
             tt = 0.  # used to register simulation time, is the lower bound of the interval
 
@@ -168,18 +124,8 @@ class sim_handler:
                     actual_sim_time = tt + trial*(self.T_fin)
 
                     # 0) set cortical input
-                    if self.cereb_control_class is not None:
-                        # set future RBF input
-                        if cortical_input is None:
-                            self.cereb_control_class.generate_RBF_activity(trajectory_time=tt, simulation_time=actual_sim_time)
-                        else:
-                            if healthy_cortical_input is not None and trial >= 20:
-                                self.cereb_control_class.generate_RBF_activity(trajectory_time=tt,
-                                                                               simulation_time=actual_sim_time,
-                                                                               ctx_input=healthy_cortical_input[int(tt)] * 200.)
-                            else:
-                                self.cereb_control_class.generate_RBF_activity(trajectory_time=tt, simulation_time=actual_sim_time,
-                                                      ctx_input=cortical_input[int(tt)] * 200.)
+                    for a_c in self.additional_classes:
+                        a_c.beginning_loop(tt, actual_sim_time)
 
                     # 1) Run nest simulation for T ms (in [tt, tt + T]) or (in [actual_sim_time, actual_sim_time + T])
                     # We don't need to pass tt since nest RunManager save actual time value
@@ -209,93 +155,14 @@ class sim_handler:
 
                     u_sol = np.concatenate((u_sol, u * np.ones((int_t.shape[0] - 1, self.u_dim))), axis=0)  # save inputs
 
-                    if self.cereb_control_class is not None:
-                        # update io value for next step
-                        # new_io = calculate_instantaneous_fr(self.nest, self.sd_list_IO, self.pop_list_from_robot,
-                        #                                     time=actual_sim_time, T_sample=self.T)
-                        # io, io_old = evaluate_fir(io_old, new_io.reshape((1, 2)), kernel=kernel)
-                        # # steps_from_begin=int(tt/self.T)+1)
-                        # io_sol = np.concatenate((io_sol, io * np.ones((1, 2))), axis=0)
-
-                        # a) Update robot position
-                        # use tau of (previous step!) to update robot position
-                        tau_pos = tau[1::2]    # to take odd elements:   [1::2]
-                        tau_neg = tau[0::2]    # to take even elements:  [0::2]
-
-                        if self.u_dim == 1:     # TO BE improved
-                            if self.n_joints == 1: k = 0.4
-                            if self.n_joints == 2: k = 0.5
-                            if modified_tau_ is not None:
-                                if cortical_input is None:
-                                    self.robot.update_state(
-                                        (tau_pos - tau_neg) * k + modified_tau_(tt) * 1)
-                                else:
-                                    self.robot.update_state(
-                                        (tau_pos - tau_neg) * k + modified_tau_(tt) * cortical_input[int(tt)] / 0.41019194941123904)
-                            else:
-                                # self.robot.update_state(2)
-                                self.robot.update_state((tau_pos - tau_neg)[0] * k)
-                        else:
-                            # self.robot.update_state((tau_pos - tau_neg)*0.5 + 8 * xT[0])
-                            self.robot.update_state((tau_pos - tau_neg)*0.01)
-
-                        e_old = np.concatenate((e_old, np.zeros((1, self.n_joints))))
-                        for k in range(self.n_joints):
-                            ccc = self.cereb_control_class
-                            # b) Inject robot error in IO
-                            # joint position has just been updated to tt with tau(tt - T), so select tt!
-                            e_new = ccc.get_error_value(tt + self.T, self.robot.q[k], k)    # self.robot.q[j])
-                            e_old[-1, k] = e_new
-                            e = e_old[0, k]
-
-                            if self.n_joints == 1: e = e*5.
-                            if self.n_joints == 2: e = e*3.
-                            if e > 0.:
-                                if e > 7.: e = 7.
-                                # set the future spike trains (in [tt + T, tt + 2T])
-                                self.set_poisson_fr(e, [ccc.Cereb_class.CTX_pops['US_p'][k]], actual_sim_time + self.T)
-                            elif e < 0.:
-                                if e < -7.: e = -7.
-                                # set the future spike trains (in [tt + T, tt + 2T])
-                                self.set_poisson_fr(-e, [ccc.Cereb_class.CTX_pops['US_n'][k]], actual_sim_time + self.T)
-                        e_old = e_old[1:, :]
-
-                        # update tau value for next step
-                        new_tau = calculate_instantaneous_fr(self.nest, self.sd_list_R, self.pop_list_to_robot,
-                                                             time=actual_sim_time, T_sample=self.T)
-                        # new_tau, t_prev = calculate_instantaneous_burst_activity(self.nest, self.sd_list_R, self.pop_list_to_robot,
-                        #                                      time=actual_sim_time, t_prev=t_prev)
-                        tau, tau_old = evaluate_fir(tau_old, new_tau.reshape((1, self.u_R_dim)), kernel=kernel_robot)
-                        if tau_sol is None:
-                            tau_sol = np.array([tau])
-                        else:
-                            tau_sol = np.concatenate((tau_sol, [tau]), axis=0)
-
-                        # update io
-                        new_io = calculate_instantaneous_fr(self.nest, sd_list_io, list_io,
-                                                             time=actual_sim_time, T_sample=self.T)
-                        io, io_old = evaluate_fir(io_old, new_io.reshape((1, 2*self.n_joints)), kernel=kernel)
-                        if io_sol is None:
-                            io_sol = np.array([io])
-                        else:
-                            io_sol = np.concatenate((io_sol, [io]), axis=0)
+                    for a_c in self.additional_classes:
+                        a_c.ending_loop(tt, actual_sim_time)
 
                     tt = tt + self.T  # update actual time
-
-                # vsl.simple_plot(range(len(q_val)), q_val)
-                # vsl.simple_plot(range(len(q_val)), tau_sol[-len(q_val):, :])
-
-                # if settling_time > 0.:
-                #     for j, ccc in enumerate(self.cereb_control_class):
-                #         pf_pc_syn = self.nest.GetStatus(ccc.Cereb_class.PF_PC_conn)
-                #         w = [pf_pc_syn[i]['weight'] for i in range(len(pf_pc_syn))]
 
         # save the time evolution of mass model state as self.ode_sol variable
         self.ode_sol = ode_sol
         self.u_sol = u_sol
-        if self.cereb_control_class is not None:
-            self.io_sol = io_sol
-            self.tau_sol = tau_sol
 
 
     def set_poisson_fr(self, fr, target_pop, time, yT_buf=None):
@@ -320,16 +187,6 @@ class sim_handler:
             self.nest.SetStatus(poiss, generator_params)
 
         return yT_buf
-
-    def attach_io_spike_det(self):
-        io_list = []
-        sub_pop_IO_len = int(len(self.cereb_control_class.Cereb_class.Cereb_pops['IO']) / self.n_joints)
-        for j in range(self.n_joints):
-            io_neg = list(self.cereb_control_class.Cereb_class.Cereb_pops['IO'][2 * j * sub_pop_IO_len // 2:(2 * j + 1) * sub_pop_IO_len // 2])
-            io_pos = list(self.cereb_control_class.Cereb_class.Cereb_pops['IO'][(2 * j + 1) * sub_pop_IO_len // 2:(2 * j + 2) * sub_pop_IO_len // 2])
-            io_list += [io_neg] + [io_pos]
-
-        return utils.attach_spikedetector(self.nest, io_list), io_list
 
 
 def generate_poisson_trains(poisson, fr, T, time, rand_gen):
