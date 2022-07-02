@@ -87,7 +87,6 @@ class sim_handler:
 
         # define sigma and window width in ms
         kernel = half_gaussian(sigma=10., width=40., sampling_time=self.T)
-        kernel_robot = half_gaussian(sigma=600., width=300., sampling_time=self.T)
 
         # prepare solution buffers
         u0 = np.array([0.] * self.u_dim)
@@ -215,7 +214,6 @@ def generate_poisson_trains(poisson, fr, T, time, rand_gen):
                     + rand_gen.normal(0, gaussian_sd(occ), size=occ),  # add gaussian noise
                     1))  # round definition at 0.1 ms
             if occ != 0 else [] for occ in occurrences]  # replace with empty list if no occurrences to be places
-        # maybe better with uniform draws?
 
     if method == 'uniform':
         spike_trains = []
