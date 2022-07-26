@@ -77,7 +77,7 @@ class sim_handler:
         return 1. / (1 + np.exp(-self.a * (s - self.th))) + self.q
 
 
-    def simulate(self, sub_intervals=10, tot_trials=1):
+    def simulate(self, sub_intervals=10, tot_trials=1, pre_sim_time=0.):
         """ Simulate the model made by spiking n.n.s and mass models.
             Total simulation time is self.T_fin, while sampling time is self.T   """
 
@@ -104,6 +104,11 @@ class sim_handler:
         ode_to_spikes_delay = int(3 / self.T)  # [ms]      # delay before sending inputs to mass models
         yT_buf = np.tile(y0, [ode_to_spikes_delay, 1])  # create a buffer of ode_to_spikes_delay yT
 
+        if pre_sim_time > 0.:
+            with self.nest.RunManager():  # allows running consequently nest simulations
+                print(f'Starting pre-simulation of {pre_sim_time} ms')
+                self.nest.Run(pre_sim_time)
+
         # if trial is not 1, net will be simulated multiple times
         # NOTE THAT network status won't be reset, but just robot status
         for trial in range(tot_trials):
@@ -115,12 +120,12 @@ class sim_handler:
             tt = 0.  # used to register simulation time, is the lower bound of the interval
 
             with self.nest.RunManager():    # allows running consequently nest simulations
-                print(f'Starting robot simulation of {self.T_fin} ms')
+                print(f'Starting simulation of {self.T_fin} ms')
 
                 while tt < self.T_fin:      # run until the lower bound < final time
 
                     # total elapsed time, also from previous simulations
-                    actual_sim_time = tt + trial*(self.T_fin)
+                    actual_sim_time = tt + trial*(self.T_fin) + pre_sim_time
 
                     # 0) set cortical input
                     for a_c in self.additional_classes:
