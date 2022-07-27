@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.integrate import odeint
+from scipy.integrate import solve_ivp
 import time
 from contextlib import contextmanager
 
@@ -66,10 +66,10 @@ class sim_handler:
         # IMPORTANT!: for odeint x should be a row vector, incoherent with model definition
         # We define x and u as row vectors, so we have to transpose them before matrix products
         if const_in is not None:
-            rhs = lambda x, t, u: 1000. / self.tau_decay * (
+            rhs = lambda t, x, u: 1000. / self.tau_decay * (
                         -x + self.lambda_max(x) * self.sigmoid(self.A @ x.T + self.B @ u.T + const_in.T))
         else:
-            rhs = lambda x, t, u: 1000. / self.tau_decay * (
+            rhs = lambda t, x, u: 1000. / self.tau_decay * (
                         -x + self.lambda_max(x) * self.sigmoid(self.A @ x.T + self.B @ u.T))
         return rhs
 
@@ -90,9 +90,10 @@ class sim_handler:
 
         # prepare solution buffers
         u0 = np.array([0.] * self.u_dim)
-        u_sol = u0.reshape((1, self.u_dim))  # will contain all solutions over time
-        x0 = np.array([0.] * self.x_dim)  # self.ode_params['lambda_max'] / 2  # a typical equilibrium condition
-        ode_sol = x0.reshape((1, self.x_dim))  # will contain all states over time
+        u_sol = u0.reshape((1, self.u_dim))     # will contain all solutions over time
+        x0 = np.array([0.] * self.x_dim)        # self.ode_params['lambda_max'] / 2  # a typical equilibrium condition
+        ode_sol = x0.reshape((1, self.x_dim))   # will contain all states over time
+        ode_sol_t = np.array([0.])              # will contain the state time
         y0 = self.C @ x0
 
         # prepare initial values for calls in for loop
@@ -123,9 +124,10 @@ class sim_handler:
                                                        time=actual_sim_time, T_sample=self.T)
 
                     # 3) Solve odes for T ms (in [tt, tt + T]), in sub_intervals defined before
-                    sol = odeint(self.rhs, x0, int_t, args=(u,))
-                    ode_sol = np.concatenate((ode_sol, sol[1:]), axis=0)  # take all the values after initial condition
-                    xT = sol[-1, :]  # keep the final time states
+                    sol = solve_ivp(self.rhs, t_span=[0, self.T / 1000.], y0=x0, method='RK45', t_eval=int_t, args=(u,))
+                    ode_sol = np.concatenate((ode_sol, sol.y[:, 1:].T), axis=0)  # take all the values after initial condition
+                    ode_sol_t = np.concatenate((ode_sol_t, sol.t[1:] * 1000. + actual_sim_time), axis=0)
+                    xT = sol.y[:, -1]  # keep the final time states
 
                     # 4) transform fr to spikes
                     # to be used in the next interval
@@ -144,10 +146,6 @@ class sim_handler:
                                            axis=0)  # save inputs
 
                     tt = tt + self.T  # update actual time
-
-                # save the time evolution of mass model state as self.ode_sol variable
-                self.ode_sol = ode_sol
-                self.u_sol = u_sol
 
         # if trial is not 1, net will be simulated multiple times
         # NOTE THAT network status won't be reset, but just robot status
@@ -181,9 +179,10 @@ class sim_handler:
                                                        time=actual_sim_time, T_sample=self.T)
 
                     # 3) Solve odes for T ms (in [tt, tt + T]), in sub_intervals defined before
-                    sol = odeint(self.rhs, x0, int_t, args=(u,))
-                    ode_sol = np.concatenate((ode_sol, sol[1:]), axis=0)  # take all the values after initial condition
-                    xT = sol[-1, :]  # keep the final time states
+                    sol = solve_ivp(self.rhs, t_span=[0, self.T / 1000.], y0=x0, method='RK45', t_eval=int_t, args=(u,))
+                    ode_sol = np.concatenate((ode_sol, sol.y[:, 1:].T), axis=0)  # take all the values after initial condition
+                    ode_sol_t = np.concatenate((ode_sol_t, sol.t[1:] * 1000. + actual_sim_time), axis=0)
+                    xT = sol.y[:, -1]  # keep the final time states
 
                     # 4) transform fr to spikes
                     # to be used in the next interval
@@ -207,6 +206,7 @@ class sim_handler:
 
         # save the time evolution of mass model state as self.ode_sol variable
         self.ode_sol = ode_sol
+        self.ode_sol_t = ode_sol_t
         self.u_sol = u_sol
 
 
