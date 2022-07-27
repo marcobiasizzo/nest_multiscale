@@ -104,10 +104,46 @@ class sim_handler:
         ode_to_spikes_delay = int(3 / self.T)  # [ms]      # delay before sending inputs to mass models
         yT_buf = np.tile(y0, [ode_to_spikes_delay, 1])  # create a buffer of ode_to_spikes_delay yT
 
+        tt = 0.
+
         if pre_sim_time > 0.:
+            print(f'Starting pre-simulation of {pre_sim_time} ms')
             with self.nest.RunManager():  # allows running consequently nest simulations
-                print(f'Starting pre-simulation of {pre_sim_time} ms')
-                self.nest.Run(pre_sim_time)
+                while tt < pre_sim_time:  # run until the lower bound < final time
+                    # total elapsed time, also from previous simulations
+                    actual_sim_time = tt
+
+                    # 1) Run nest simulation for T ms (in [tt, tt + T]) or (in [actual_sim_time, actual_sim_time + T])
+                    # We don't need to pass tt since nest RunManager save actual time value
+                    self.nest.Run(self.T)  # with nest run we can evaluate smaller intervals
+
+                    # 2) Transform spikes into f.r.
+                    # to be used in the next interval
+                    new_u = calculate_instantaneous_fr(self.nest, self.sd_list, self.pop_list_to_ode,
+                                                       time=actual_sim_time, T_sample=self.T)
+
+                    # 3) Solve odes for T ms (in [tt, tt + T]), in sub_intervals defined before
+                    sol = odeint(self.rhs, x0, int_t, args=(u,))
+                    ode_sol = np.concatenate((ode_sol, sol[1:]), axis=0)  # take all the values after initial condition
+                    xT = sol[-1, :]  # keep the final time states
+
+                    # 4) transform fr to spikes
+                    # to be used in the next interval
+                    yT = self.C @ xT  # calculate the transferred f.r., to be used in next interval
+                    yT = yT.reshape(1, self.y_dim)
+
+                    # update values for next integration step:
+                    x0 = xT  # update fr state to continue integration
+                    # update input values from populations projecting to odes
+                    u, u_old = evaluate_fir(u_old, new_u.reshape((1, self.u_dim)), kernel=kernel)
+                    # set the future spike trains (in [tt + T, tt + 2T])
+                    yT_buf = set_poisson_fr(self.nest, yT, self.pop_list_to_nest, actual_sim_time + self.T,
+                                            self.T, self.rng, yT_buf=yT_buf)
+
+                    u_sol = np.concatenate((u_sol, u * np.ones((int_t.shape[0] - 1, self.u_dim))),
+                                           axis=0)  # save inputs
+
+                    tt = tt + self.T  # update actual time
 
         # if trial is not 1, net will be simulated multiple times
         # NOTE THAT network status won't be reset, but just robot status
