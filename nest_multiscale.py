@@ -145,6 +145,10 @@ class sim_handler:
 
                     tt = tt + self.T  # update actual time
 
+                # save the time evolution of mass model state as self.ode_sol variable
+                self.ode_sol = ode_sol
+                self.u_sol = u_sol
+
         # if trial is not 1, net will be simulated multiple times
         # NOTE THAT network status won't be reset, but just robot status
         for trial in range(tot_trials):
