@@ -38,7 +38,7 @@ class sim_handler:
         if additional_classes is not None:
             self.additional_classes = additional_classes
             for a_c in self.additional_classes:
-                a_c.start(sim_time_, sim_period_)
+                a_c.start(self, sim_time_, sim_period_)
         else:
             self.additional_classes = []
 
@@ -153,7 +153,7 @@ class sim_handler:
             print(f'Iteration #{trial + 1}')
 
             for a_c in self.additional_classes:
-                a_c.before_loop()
+                a_c.before_loop(self)
 
             tt = 0.  # used to register simulation time, is the lower bound of the interval
 
@@ -167,7 +167,7 @@ class sim_handler:
 
                     # 0) set cortical input
                     for a_c in self.additional_classes:
-                        a_c.beginning_loop(tt, actual_sim_time)
+                        a_c.beginning_loop(self, tt, actual_sim_time)
 
                     # 1) Run nest simulation for T ms (in [tt, tt + T]) or (in [actual_sim_time, actual_sim_time + T])
                     # We don't need to pass tt since nest RunManager save actual time value
@@ -200,7 +200,7 @@ class sim_handler:
                     u_sol = np.concatenate((u_sol, u * np.ones((int_t.shape[0] - 1, self.u_dim))), axis=0)  # save inputs
 
                     for a_c in self.additional_classes:
-                        a_c.ending_loop(tt, actual_sim_time)
+                        a_c.ending_loop(self, tt, actual_sim_time)
 
                     tt = tt + self.T  # update actual time
 
