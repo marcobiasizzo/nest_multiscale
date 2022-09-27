@@ -7,7 +7,7 @@ from marco_nest_utils import utils, visualizer as vsl
 
 
 class sim_handler:
-    def __init__(self, nest_, pop_list_to_ode_, pop_list_to_nest_, ode_params_, sim_time_, sim_period_=1,
+    def __init__(self, nest_, pop_list_to_ode_, pop_list_to_nest_, ode_params_, sim_time_, sim_period_=1., resolution=0.1,
                  additional_classes=None):
         self.nest = nest_  # load nest and previously defined spiking n.n.s
         self.pop_list_to_ode = pop_list_to_ode_     # list of neurons pops projecting to mass model
@@ -26,6 +26,8 @@ class sim_handler:
 
         self.T = sim_period_  # separated simulation time interval, [ms]
         self.T_fin = sim_time_  # total simulation time [ms]
+
+        self.resolution = resolution    # Nest resolution [ms]
 
         self.get_system_dimentions()  # derive state, in and out dimensions according to matrices
         self.tau_decay = ode_params_['tau']  # should be provided in ms!
@@ -140,7 +142,7 @@ class sim_handler:
                     u, u_old = evaluate_fir(u_old, new_u.reshape((1, self.u_dim)), kernel=kernel)
                     # set the future spike trains (in [tt + T, tt + 2T])
                     yT_buf = set_poisson_fr(self.nest, yT, self.pop_list_to_nest, actual_sim_time + self.T,
-                                            self.T, self.rng, yT_buf=yT_buf)
+                                            self.T, self.rng, self.resolution, yT_buf=yT_buf)
 
                     u_sol = np.concatenate((u_sol, u * np.ones((int_t.shape[0] - 1, self.u_dim))),
                                            axis=0)  # save inputs
@@ -195,7 +197,7 @@ class sim_handler:
                     u, u_old = evaluate_fir(u_old, new_u.reshape((1, self.u_dim)), kernel=kernel)
                     # set the future spike trains (in [tt + T, tt + 2T])
                     yT_buf = set_poisson_fr(self.nest, yT, self.pop_list_to_nest, actual_sim_time + self.T,
-                                                 self.T, self.rng, yT_buf=yT_buf)
+                                                 self.T, self.rng, self.resolution, yT_buf=yT_buf)
 
                     u_sol = np.concatenate((u_sol, u * np.ones((int_t.shape[0] - 1, self.u_dim))), axis=0)  # save inputs
 
@@ -210,7 +212,7 @@ class sim_handler:
         self.u_sol = u_sol
 
 
-def set_poisson_fr(nest_, fr, target_pop, time, T_sample, random_gen, yT_buf=None):
+def set_poisson_fr(nest_, fr, target_pop, time, T_sample, random_gen, resolution, yT_buf=None):
     """ Set the firing rate for a list of poisson generators (which are pops of neurons) """
     # first, save yT in yT_buf
     if yT_buf is not None:
@@ -226,7 +228,7 @@ def set_poisson_fr(nest_, fr, target_pop, time, T_sample, random_gen, yT_buf=Non
         if set_yT[idx] < 0.:        # solving numerical problem generating negative fr
             # # print(set_yT[idx])
             set_yT[idx] = 0.
-        spike_times = generate_poisson_trains(poiss, set_yT[idx], T_sample, time, random_gen)  # long as number of neurons in pop
+        spike_times = generate_poisson_trains(poiss, set_yT[idx], T_sample, time, random_gen, resolution)  # long as number of neurons in pop
         # spike_times = self.generate_poisson_trains(poiss, set_yT[idx] + bkgroung_fr[idx], self.T, time)  # long as number of neurons in pop
         generator_params = [{"spike_times": s_t, "spike_weights": [1.] * len(s_t)} for s_t in spike_times]
         nest_.SetStatus(poiss, generator_params)
@@ -234,7 +236,7 @@ def set_poisson_fr(nest_, fr, target_pop, time, T_sample, random_gen, yT_buf=Non
     return yT_buf
 
 
-def generate_poisson_trains(poisson, fr, T, time, rand_gen):
+def generate_poisson_trains(poisson, fr, T, time, rand_gen, resolution):
     """ Generate a train of spikes as a Poisson process
         In this version we evaluate the number of spikes in
         1 interval, and we place them using linspace        """
@@ -255,10 +257,11 @@ def generate_poisson_trains(poisson, fr, T, time, rand_gen):
             np.sort(  # sort it by spiking time (should be already sorted)
                 time +  # sum the time of the beginning of the interval
                 np.round(  # approximate to 0.1 ms
+                    1./resolution *  # necessary to produce spike times coherent with nest resolution
                     np.linspace(T / (occ * 2), T * (1. - 1. / (occ * 2)), num=occ,
                                 endpoint=True)  # place at the centre
                     + rand_gen.normal(0, gaussian_sd(occ), size=occ),  # add gaussian noise
-                    1))  # round definition at 0.1 ms
+                    0)) * resolution  # round definition at 0.1 ms
             if occ != 0 else [] for occ in occurrences]  # replace with empty list if no occurrences to be places
 
     if method == 'uniform':
@@ -266,12 +269,13 @@ def generate_poisson_trains(poisson, fr, T, time, rand_gen):
         for occ in occurrences:
             if occ == 0:
                 train = []
+                spike_trains += [train]
             elif occ > 0:
                 # init_interval_values = time + np.linspace(0, T * (1. - 1. / occ), num=occ, endpoint=True)  #
                 init_interval_values = time + np.linspace(0 + 0.06, T - 0.06, num=occ, endpoint=False)  #
                 train = init_interval_values + rand_gen.uniform(0, (T - 0.12) / occ, size=occ)
                 # print(np.round(train, 1))
-            spike_trains += [np.round(train, 1)]
+                spike_trains += [np.round(1./resolution * train, 0) * resolution]
 
     # check if spikes are outside the interval
     for s_t, occ in zip(spike_trains, occurrences):
@@ -288,7 +292,7 @@ def generate_poisson_trains(poisson, fr, T, time, rand_gen):
                 while any(np.diff(s_t)) == 0:  # if any couple of spike times is equal
                     d = np.concatenate((-1., np.diff(s_t)),
                                        axis=None)  # has elem=0 if same spike times. -1 is useful to maintain the dimention
-                    s_t[d == 0] += 0.1  # move the second element forward
+                    s_t[d == 0] += resolution  # move the second element forward
                     # print(s_t)
 
             s_t.sort()
