@@ -212,7 +212,7 @@ class sim_handler:
         self.u_sol = u_sol
 
 
-def set_poisson_fr(nest_, fr, target_pop, time, T_sample, random_gen, resolution, yT_buf=None):
+def set_poisson_fr(nest_, fr, target_pop, time, T_sample, random_gen, resolution, yT_buf=None, sin_weight=1.):
     """ Set the firing rate for a list of poisson generators (which are pops of neurons) """
     # first, save yT in yT_buf
     if yT_buf is not None:
@@ -230,7 +230,7 @@ def set_poisson_fr(nest_, fr, target_pop, time, T_sample, random_gen, resolution
             set_yT[idx] = 0.
         spike_times = generate_poisson_trains(poiss, set_yT[idx], T_sample, time, random_gen, resolution)  # long as number of neurons in pop
         # spike_times = self.generate_poisson_trains(poiss, set_yT[idx] + bkgroung_fr[idx], self.T, time)  # long as number of neurons in pop
-        generator_params = [{"spike_times": s_t, "spike_weights": [1.] * len(s_t)} for s_t in spike_times]
+        generator_params = [{"spike_times": s_t, "spike_weights": [sin_weight] * len(s_t)} for s_t in spike_times]
         nest_.SetStatus(poiss, generator_params)
 
     return yT_buf
