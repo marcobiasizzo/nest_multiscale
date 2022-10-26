@@ -1,7 +1,6 @@
 import numpy as np
 from scipy.integrate import solve_ivp
 import time
-from contextlib import contextmanager
 
 from marco_nest_utils import utils, visualizer as vsl
 
