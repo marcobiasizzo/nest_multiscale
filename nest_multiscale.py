@@ -4,7 +4,7 @@ import time
 from contextlib import contextmanager
 
 from marco_nest_utils import utils, visualizer as vsl
-
+n_wind = 27
 
 class sim_handler:
     def __init__(self, nest_, pop_list_to_ode_, pop_list_to_nest_, ode_params_, sim_time_, sim_period_=1., resolution=0.1,
@@ -58,7 +58,7 @@ class sim_handler:
         self.u_dim = B_dim[1]
         C_dim = self.C.shape
         assert C_dim[1] == self.x_dim, 'C clmns should be equal to # of compartments'
-        assert C_dim[0] == len((self.pop_list_to_nest)), 'Number of output pops should be coherent with C raws'
+        assert C_dim[0] == len((self.pop_list_to_nest))-n_wind, 'Number of output pops should be coherent with C raws'
         self.y_dim = C_dim[0]
         print('Loaded matrices!')
         print(f'System dimentions are: d_state={self.x_dim}, d_input={self.u_dim}, d_output={self.y_dim}')
@@ -140,6 +140,15 @@ class sim_handler:
                     x0 = xT  # update fr state to continue integration
                     # update input values from populations projecting to odes
                     u, u_old = evaluate_fir(u_old, new_u.reshape((1, self.u_dim)), kernel=kernel)
+                    if not yT_buf.size:
+                        yT_buf = np.ndarray((0,8 + n_wind))
+                    elif yT_buf.shape[1]==8:
+                        
+                        yT_buf = np.insert(yT_buf,1,np.repeat(yT_buf[:,0], n_wind) ,axis=1)
+                    # yT_tmp = np.tile(yT[:,0].reshape(2,1),2)
+                    # yT = np.concatenate((yT_tmp, yT[:,1:]), axis=1)
+                    yT[0] = yT[0]
+                    yT = np.insert(yT,1,np.repeat(yT[:,0], n_wind),axis=1)
                     # set the future spike trains (in [tt + T, tt + 2T])
                     yT_buf = set_poisson_fr(self.nest, yT, self.pop_list_to_nest, actual_sim_time + self.T,
                                             self.T, self.rng, self.resolution, yT_buf=yT_buf)
@@ -196,6 +205,13 @@ class sim_handler:
                     # update input values from populations projecting to odes
                     u, u_old = evaluate_fir(u_old, new_u.reshape((1, self.u_dim)), kernel=kernel)
                     # set the future spike trains (in [tt + T, tt + 2T])
+                    if not yT_buf.size:
+                        yT_buf = np.ndarray((0, 8 + n_wind))
+                    # yT_tmp = np.tile(yT[:,0].reshape(2,1),2)
+                    # yT = np.concatenate((yT_tmp, yT[:,1:]), axis=1)
+                    yT[0] = yT[0]
+                    rep = np.repeat(yT[:,0], n_wind).reshape(1,n_wind)
+                    yT = np.concatenate([rep,yT],axis = 1)
                     yT_buf = set_poisson_fr(self.nest, yT, self.pop_list_to_nest, actual_sim_time + self.T,
                                                  self.T, self.rng, self.resolution, yT_buf=yT_buf)
 
@@ -203,7 +219,7 @@ class sim_handler:
 
                     for a_c in self.additional_classes:
                         a_c.ending_loop(self, tt, actual_sim_time)
-                        #a_c.CS(self,yT, tt, actual_sim_time)
+                        a_c.CS(self,yT, tt, actual_sim_time)
 
                     tt = tt + self.T  # update actual time
 
@@ -213,7 +229,7 @@ class sim_handler:
         self.u_sol = u_sol
 
 
-def set_poisson_fr(nest_, fr, target_pop, time, T_sample, random_gen, resolution, yT_buf=None, sin_weight=1.):
+def set_poisson_fr(nest_, fr, target_pop, time, T_sample, random_gen, resolution, yT_buf=None, sin_weight=1., in_spikes = "active"):
     """ Set the firing rate for a list of poisson generators (which are pops of neurons) """
     # first, save yT in yT_buf
     if yT_buf is not None:
@@ -221,7 +237,7 @@ def set_poisson_fr(nest_, fr, target_pop, time, T_sample, random_gen, resolution
         set_yT = yT_buf[0, :]
         yT_buf = yT_buf[1:, :]    # discard the old elem, which we will set now
     else:
-        set_yT = np.tile(fr, [1])
+        set_yT = np.tile(fr, [n_wind])
 
     # bkgroung_fr = np.array([0, 162.5, 162.5, 486., 486., 642.6, 642.6, 700.4])
 
@@ -229,22 +245,31 @@ def set_poisson_fr(nest_, fr, target_pop, time, T_sample, random_gen, resolution
         if set_yT[idx] < 0.:        # solving numerical problem generating negative fr
             # # print(set_yT[idx])
             set_yT[idx] = 0.
-        if isinstance(poiss, int):
-            n_spk = 1000/fr[0]*T_sample
-            resto = time%T_sample
-            spk = np.arange(time-resto, time-resto +T_sample ,n_spk)
-            generator_params = [{"spike_times": spk}]
-            poiss = [poiss]
-       
-        else:
-            spike_times = generate_poisson_trains(poiss, set_yT[idx], T_sample, time, random_gen, resolution)  # long as number of neurons in pop
-            # spike_times = self.generate_poisson_trains(poiss, set_yT[idx] + bkgroung_fr[idx], self.T, time)  # long as number of neurons in pop
-            generator_params = [{"spike_times": s_t, "spike_weights": [sin_weight] * len(s_t)} for s_t in spike_times]
+        # if in_spikes == "EBCC":
+        #     resto = time%T_sample
+        #     start = time-resto
+        #     stop = time-resto+T_sample
+        #     generator_params = {"start": start, "stop": stop, "rate":fr[0]}
+        # elif in_spikes == "active":
+        factor = [7000/n_wind for i in range(n_wind)]
+        factor = [n_wind for i in range(n_wind)]
+
+        factor.extend([1 for i in range(8)])
+        spike_times = generate_poisson_trains(poiss, set_yT[idx]*factor[idx], T_sample, time, random_gen, resolution)  # long as number of neurons in pop
+        # spike_times = self.generate_poisson_trains(poiss, set_yT[idx] + bkgroung_fr[idx], self.T, time)  # long as number of neurons in pop
+        generator_params = [{"spike_times": s_t, "spike_weights": [sin_weight] * len(s_t)} for s_t in spike_times]
             
         nest_.SetStatus(poiss, generator_params)
 
     return yT_buf
 
+def generate_poisson_trains_ebcc(poisson, fr, T, time, rand_gen, resolution):
+    resto = time%T
+    start = time-resto
+    stop = time-resto+T
+    generator_params = {"start": start, "stop": stop, "rate":fr[0]}
+
+    return poisson, generator_params
 
 def generate_poisson_trains(poisson, fr, T, time, rand_gen, resolution):
     """ Generate a train of spikes as a Poisson process
