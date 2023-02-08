@@ -4,7 +4,7 @@ import time
 from contextlib import contextmanager
 
 from marco_nest_utils import utils, visualizer as vsl
-n_wind = 27
+n_wind = 0
 
 class sim_handler:
     def __init__(self, nest_, pop_list_to_ode_, pop_list_to_nest_, ode_params_, sim_time_, sim_period_=1., resolution=0.1,
@@ -140,15 +140,16 @@ class sim_handler:
                     x0 = xT  # update fr state to continue integration
                     # update input values from populations projecting to odes
                     u, u_old = evaluate_fir(u_old, new_u.reshape((1, self.u_dim)), kernel=kernel)
-                    if not yT_buf.size:
+                    if not yT_buf.size and n_wind>0:
                         yT_buf = np.ndarray((0,8 + n_wind))
-                    elif yT_buf.shape[1]==8:
+                    elif yT_buf.shape[1]==8 and n_wind>0:
                         
                         yT_buf = np.insert(yT_buf,1,np.repeat(yT_buf[:,0], n_wind) ,axis=1)
                     # yT_tmp = np.tile(yT[:,0].reshape(2,1),2)
                     # yT = np.concatenate((yT_tmp, yT[:,1:]), axis=1)
-                    yT[0] = yT[0]
-                    yT = np.insert(yT,1,np.repeat(yT[:,0], n_wind),axis=1)
+                    if n_wind>0:
+                        yT[0] = yT[0]
+                        yT = np.insert(yT,1,np.repeat(yT[:,0], n_wind),axis=1)
                     # set the future spike trains (in [tt + T, tt + 2T])
                     yT_buf = set_poisson_fr(self.nest, yT, self.pop_list_to_nest, actual_sim_time + self.T,
                                             self.T, self.rng, self.resolution, yT_buf=yT_buf)
@@ -209,9 +210,10 @@ class sim_handler:
                         yT_buf = np.ndarray((0, 8 + n_wind))
                     # yT_tmp = np.tile(yT[:,0].reshape(2,1),2)
                     # yT = np.concatenate((yT_tmp, yT[:,1:]), axis=1)
-                    yT[0] = yT[0]
-                    rep = np.repeat(yT[:,0], n_wind).reshape(1,n_wind)
-                    yT = np.concatenate([rep,yT],axis = 1)
+                    if n_wind>0:
+                        yT[0] = yT[0]
+                        rep = np.repeat(yT[:,0], n_wind).reshape(1,n_wind)
+                        yT = np.concatenate([rep,yT],axis = 1)
                     yT_buf = set_poisson_fr(self.nest, yT, self.pop_list_to_nest, actual_sim_time + self.T,
                                                  self.T, self.rng, self.resolution, yT_buf=yT_buf)
 
